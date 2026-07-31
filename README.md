@@ -88,6 +88,7 @@ Other supported variables:
 | `OTEL_SERVICE_NAME` | Service name; defaults to `pi` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to 1000 |
 | `PI_OTEL_CONTENT_MAX_LENGTH` | Maximum content attribute length; defaults to 61,440 characters |
+| `PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT` | Set `true` to capture results from `otel_*`/OTelux MCP tools; defaults to redacted to prevent self-observation feedback |
 | `PI_OTEL_SERVICE_VERSION` | Override the Pi service version stamped on resources |
 
 The current implementation uses OTLP/HTTP protobuf, matching the OpenTelemetry JS exporter default. A backend can receive the signals directly or through an OpenTelemetry Collector.
@@ -112,6 +113,8 @@ When enabled, telemetry can contain:
 - Session paths and working directories
 
 Treat the destination as sensitive storage. Provider HTTP headers are not captured by `before_provider_request`; response headers are captured when content capture is enabled.
+
+Results from `otel_*` and `mcp__otelux*` tools are redacted from content attributes by default. Their spans, names, call IDs, timing, status, and input arguments are still exported. This prevents a query of an OTel backend from being embedded into telemetry, queried again, and recursively amplified through later provider payloads. Set `PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT=true` only when that feedback risk is intentional and bounded.
 
 ## Design
 
