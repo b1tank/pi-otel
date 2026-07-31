@@ -68,7 +68,8 @@ export class Telemetry {
 
     this.loggerProvider = new LoggerProvider({
       resource,
-      processors: [new BatchLogRecordProcessor(new OTLPLogExporter(exporterOptions(config.logsEndpoint)), {
+      processors: [new BatchLogRecordProcessor({
+        exporter: new OTLPLogExporter(exporterOptions(config.logsEndpoint)),
         scheduledDelayMillis: 500,
       })],
     })
