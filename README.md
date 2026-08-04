@@ -41,11 +41,14 @@ Standard attributes include:
 - `gen_ai.invoke_agent.inference_calls`
 - `gen_ai.invoke_agent.tool_calls`
 - `gen_ai.execute_tool.duration`
+- `pi.tool.execution.count`
 - `pi.gen_ai.cost.usage`
 
 ### Logs
 
-Structured lifecycle logs include session, user-message, provider-request/response, turn, assistant-message, tool, compaction, model-selection, and shutdown events. Logs emitted inside an operation carry that operation's trace and span IDs.
+Structured lifecycle logs include session, user-message, provider-request/response, turn, assistant-message, tool, compaction, model-selection, and shutdown events. Logs emitted inside an operation carry that operation's trace and span IDs. Failed provider and tool operations use `ERROR` severity; HTTP 4xx responses use `WARN` unless the provider operation later fails.
+
+High-volume content is recorded once on the canonical span rather than repeated in lifecycle logs. Tool failures add bounded `error.type` and `pi.tool.failure.*` attributes for process exits, timeouts, edit conflicts, missing configuration, validation failures, and shared-resource conflicts.
 
 ## Installation
 
@@ -87,15 +90,17 @@ Other supported variables:
 | `OTEL_RESOURCE_ATTRIBUTES` | Percent-encoded comma-separated resource attributes |
 | `OTEL_SERVICE_NAME` | Service name; defaults to `pi` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to 1000 |
-| `PI_OTEL_CONTENT_MAX_LENGTH` | Maximum content attribute length; defaults to 61,440 characters |
+| `PI_OTEL_CONTENT_MAX_LENGTH` | Maximum content attribute length; defaults to 16,384 characters |
 | `PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT` | Set `true` to capture results from `otel_*`/OTelux MCP tools; defaults to redacted to prevent self-observation feedback |
-| `PI_OTEL_SERVICE_VERSION` | Override the Pi service version stamped on resources |
+| `PI_OTEL_CAPTURE_PROVIDER_PAYLOAD` | Set `true` to capture the full serialized provider request body; defaults to disabled because it duplicates the active conversation and system prompt |
+| `PI_OTEL_CAPTURE_PROVIDER_HEADERS` | Set `true` to capture provider response headers; defaults to disabled because headers may contain sensitive or high-cardinality metadata |
+| `PI_OTEL_SERVICE_VERSION` | Pi service and agent version stamped on resources and agent spans |
 
 The current implementation uses OTLP/HTTP protobuf, matching the OpenTelemetry JS exporter default. A backend can receive the signals directly or through an OpenTelemetry Collector.
 
 ## Sensitive content capture
 
-Content is redacted by default. Enable full prompt, response, tool, system-prompt, and provider-payload capture explicitly:
+Content is redacted by default. Enable prompt, response, tool, and system-prompt capture explicitly:
 
 ```bash
 export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
@@ -108,17 +113,18 @@ When enabled, telemetry can contain:
 - User prompts and images metadata
 - Assistant responses and usage
 - Full effective system instructions
-- Full serialized provider request payloads
 - Tool arguments and results, including shell output and file contents
 - Session paths and working directories
 
-Treat the destination as sensitive storage. Provider HTTP headers are not captured by `before_provider_request`; response headers are captured when content capture is enabled.
+Treat the destination as sensitive storage. Full provider payloads and response headers remain separately gated by `PI_OTEL_CAPTURE_PROVIDER_PAYLOAD` and `PI_OTEL_CAPTURE_PROVIDER_HEADERS`; enabling general content capture does not enable them. Provider payload capture is particularly expensive because every request may repeat the system prompt and complete active conversation.
 
 Results from `otel_*` and `mcp__otelux*` tools are redacted from content attributes by default. Their spans, names, call IDs, timing, status, and input arguments are still exported. This prevents a query of an OTel backend from being embedded into telemetry, queried again, and recursively amplified through later provider payloads. Set `PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT=true` only when that feedback risk is intentional and bounded.
 
 ## Design
 
 The extension intentionally keeps OTel dependencies outside Pi core. It maps Pi's stable extension events onto a vendor-neutral telemetry model and can serve as an implementation reference for a future optional native `packages/otel` adapter in Pi.
+
+Pi currently exposes tool failure as human-readable content plus `isError`, without a structured failure cause. `pi-otel` therefore classifies only a small set of stable, bounded failure patterns and falls back to `tool_error`; it does not infer retryability for generic nonzero process exits. Exact-edit conflicts carry `pi.tool.failure.recovery=reread_required`, but the extension does not alter or suppress agent tool calls.
 
 The span hierarchy, GenAI attributes, metric names, content gate, exporter behavior, and failure isolation were informed by the OpenTelemetry implementation in GitHub Copilot's agent runtime.
 

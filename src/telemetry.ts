@@ -20,6 +20,14 @@ import type { PiOtelConfig } from "./config.js"
 const SCOPE = "pi.otel"
 const SCHEMA_URL = "https://opentelemetry.io/schemas/1.37.0"
 
+export type LogSeverity = "INFO" | "WARN" | "ERROR"
+
+const LOG_SEVERITY = {
+  INFO: SeverityNumber.INFO,
+  WARN: SeverityNumber.WARN,
+  ERROR: SeverityNumber.ERROR,
+} satisfies Record<LogSeverity, SeverityNumber>
+
 export type Operation = {
   span: Span
   context: Context
@@ -38,14 +46,15 @@ export class Telemetry {
   private readonly histograms = new Map<string, ReturnType<typeof this.meter.createHistogram>>()
   private closed = false
 
-  constructor(config: PiOtelConfig) {
+  constructor(config: PiOtelConfig, instrumentationVersion = config.serviceVersion) {
     this.config = config
     const resource = resourceFromAttributes({
+      ...config.resourceAttributes,
       "service.name": config.serviceName,
       "service.version": config.serviceVersion,
       "telemetry.sdk.language": "nodejs",
+      "pi.otel.version": instrumentationVersion,
       "pi.otel.capture_content": config.captureContent,
-      ...config.resourceAttributes,
     })
     const exporterOptions = (url: string) => ({ url, headers: config.headers })
 
@@ -55,7 +64,7 @@ export class Telemetry {
         scheduledDelayMillis: 500,
       })],
     })
-    this.tracer = this.tracerProvider.getTracer(SCOPE, config.serviceVersion, { schemaUrl: SCHEMA_URL })
+    this.tracer = this.tracerProvider.getTracer(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
 
     this.meterProvider = new MeterProvider({
       resource,
@@ -64,7 +73,7 @@ export class Telemetry {
         exportIntervalMillis: config.exportIntervalMillis,
       })],
     })
-    this.meter = this.meterProvider.getMeter(SCOPE, config.serviceVersion, { schemaUrl: SCHEMA_URL })
+    this.meter = this.meterProvider.getMeter(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
 
     this.loggerProvider = new LoggerProvider({
       resource,
@@ -73,7 +82,7 @@ export class Telemetry {
         scheduledDelayMillis: 500,
       })],
     })
-    this.logger = this.loggerProvider.getLogger(SCOPE, config.serviceVersion, { schemaUrl: SCHEMA_URL })
+    this.logger = this.loggerProvider.getLogger(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
   }
 
   start(name: string, kind: SpanKind, attributes: Attributes, parent?: Operation): Operation {
@@ -92,12 +101,17 @@ export class Telemetry {
     operation.span.end()
   }
 
-  event(name: string, attributes: Attributes = {}, operation?: Operation) {
+  event(
+    name: string,
+    attributes: Attributes = {},
+    operation?: Operation,
+    severity: LogSeverity = "INFO",
+  ) {
     operation?.span.addEvent(name, attributes)
     this.logger.emit({
       eventName: name,
-      severityNumber: SeverityNumber.INFO,
-      severityText: "INFO",
+      severityNumber: LOG_SEVERITY[severity],
+      severityText: severity,
       body: name,
       attributes: { "event.name": name, ...attributes },
       context: operation?.context,
@@ -149,7 +163,8 @@ export class Telemetry {
     if (!this.config.captureContent) return "[REDACTED]"
     let text: string
     try {
-      text = typeof value === "string" ? value : JSON.stringify(value)
+      const serialized = typeof value === "string" ? value : JSON.stringify(value)
+      text = serialized ?? String(value)
     } catch {
       text = String(value)
     }

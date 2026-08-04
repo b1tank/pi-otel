@@ -2,6 +2,8 @@ export interface PiOtelConfig {
   enabled: boolean;
   captureContent: boolean;
   captureObservabilityToolContent: boolean;
+  captureProviderPayload: boolean;
+  captureProviderHeaders: boolean;
   endpoint: string;
   tracesEndpoint: string;
   metricsEndpoint: string;
@@ -51,6 +53,12 @@ function truthy(value: string | undefined) {
   return value?.toLowerCase() === "true" || value === "1";
 }
 
+function positiveNumber(value: string | undefined, fallback: number) {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function resolveConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): PiOtelConfig {
@@ -65,6 +73,8 @@ export function resolveConfig(
     captureObservabilityToolContent: truthy(
       env.PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT,
     ),
+    captureProviderPayload: truthy(env.PI_OTEL_CAPTURE_PROVIDER_PAYLOAD),
+    captureProviderHeaders: truthy(env.PI_OTEL_CAPTURE_PROVIDER_HEADERS),
     endpoint,
     tracesEndpoint: signalEndpoint("TRACES", endpoint, env),
     metricsEndpoint: signalEndpoint("METRICS", endpoint, env),
@@ -73,7 +83,10 @@ export function resolveConfig(
     resourceAttributes: keyValues(env.OTEL_RESOURCE_ATTRIBUTES, true),
     serviceName: env.OTEL_SERVICE_NAME || "pi",
     serviceVersion: env.PI_OTEL_SERVICE_VERSION || "unknown",
-    exportIntervalMillis: Number(env.OTEL_METRIC_EXPORT_INTERVAL ?? 1000),
-    contentLimit: Number(env.PI_OTEL_CONTENT_MAX_LENGTH ?? 61_440),
+    exportIntervalMillis: positiveNumber(
+      env.OTEL_METRIC_EXPORT_INTERVAL,
+      1000,
+    ),
+    contentLimit: positiveNumber(env.PI_OTEL_CONTENT_MAX_LENGTH, 16_384),
   };
 }

@@ -35,6 +35,8 @@ describe("Telemetry", () => {
       enabled: true,
       captureContent: true,
       captureObservabilityToolContent: false,
+      captureProviderPayload: false,
+      captureProviderHeaders: false,
       endpoint: base,
       tracesEndpoint: `${base}/v1/traces`,
       metricsEndpoint: `${base}/v1/metrics`,
@@ -65,5 +67,6 @@ describe("Telemetry", () => {
     expect(telemetry.content("1234567890123456789012345")).toContain(
       "TRUNCATED",
     );
+    expect(telemetry.content(undefined)).toBe("undefined");
   });
 });

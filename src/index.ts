@@ -2,13 +2,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Attributes } from "@opentelemetry/api";
 import { resolveConfig } from "./config.js";
 import {
+  classifyToolFailure,
+  toolFailureAttributes,
+} from "./failure.js";
+import {
   isObservabilityTool,
   sanitizeForCapture,
   toolCallKeys,
 } from "./sanitize.js";
 import { SpanKind, Telemetry, type Operation } from "./telemetry.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 type Usage = {
   input?: number;
@@ -25,6 +29,12 @@ function modelAttributes(ctx: {
     "gen_ai.provider.name": ctx.model?.provider ?? "unknown",
     "gen_ai.request.model": ctx.model?.id ?? "unknown",
   };
+}
+
+function metricAttributes(ctx: {
+  model?: { provider?: string; id?: string } | null;
+}): Attributes {
+  return modelAttributes(ctx);
 }
 
 function messageUsage(message: unknown): Usage {
@@ -48,6 +58,37 @@ function messageContent(message: unknown) {
       parts: value.content,
     },
   ];
+}
+
+function lastAssistantMessage(messages: unknown): unknown {
+  if (!Array.isArray(messages)) return undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (
+      message !== null &&
+      typeof message === "object" &&
+      (message as { role?: unknown }).role === "assistant"
+    ) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function outcome(message: unknown) {
+  const reason = finishReason(message);
+  const errorMessage =
+    message && typeof message === "object"
+      ? (message as { errorMessage?: unknown }).errorMessage
+      : undefined;
+  const failed = reason === "error" || reason === "aborted";
+  return {
+    reason,
+    failed,
+    errorType: reason === "aborted" ? "aborted" : "provider_error",
+    errorMessage:
+      typeof errorMessage === "string" ? errorMessage : "Provider operation failed",
+  };
 }
 
 export default function piOtel(pi: ExtensionAPI) {
@@ -74,7 +115,7 @@ export default function piOtel(pi: ExtensionAPI) {
   });
 
   const ensure = () => {
-    if (!otel) otel = new Telemetry({ ...config, serviceVersion: VERSION });
+    if (!otel) otel = new Telemetry(config, VERSION);
     return otel;
   };
 
@@ -108,20 +149,17 @@ export default function piOtel(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, ctx) => {
     prompt = event.prompt;
     systemPrompt = event.systemPrompt;
-    const telemetry = ensure();
-    telemetry.event(
+    ensure().event(
       "pi.user.message",
       {
         ...attrs(ctx),
-        "gen_ai.input.messages": telemetry.content([
-          { role: "user", parts: [{ type: "text", content: event.prompt }] },
-        ]),
-        "gen_ai.system_instructions": telemetry.content([
-          { type: "text", content: event.systemPrompt },
-        ]),
-        "pi.system_prompt_options": telemetry.content(
-          event.systemPromptOptions,
-        ),
+        "pi.prompt.length": event.prompt.length,
+        "pi.system_prompt.length": event.systemPrompt.length,
+        "pi.context_file.count":
+          event.systemPromptOptions.contextFiles?.length ?? 0,
+        "pi.skill.count": event.systemPromptOptions.skills?.length ?? 0,
+        "pi.active_tool.count":
+          event.systemPromptOptions.selectedTools?.length ?? 0,
         "pi.image.count": event.images?.length ?? 0,
       },
       agent,
@@ -137,7 +175,7 @@ export default function piOtel(pi: ExtensionAPI) {
       "gen_ai.operation.name": "invoke_agent",
       "gen_ai.agent.id": "pi.default",
       "gen_ai.agent.name": "pi",
-      "gen_ai.agent.version": VERSION,
+      "gen_ai.agent.version": config.serviceVersion,
       "gen_ai.input.messages": telemetry.content([
         { role: "user", parts: [{ type: "text", content: prompt ?? "" }] },
       ]),
@@ -166,13 +204,10 @@ export default function piOtel(pi: ExtensionAPI) {
         ...attrs(ctx),
         "gen_ai.operation.name": "chat",
         "gen_ai.request.stream": true,
-        "gen_ai.input.messages": telemetry.content([
-          { role: "user", parts: [{ type: "text", content: prompt ?? "" }] },
-        ]),
-        "gen_ai.system_instructions": telemetry.content([
-          { type: "text", content: systemPrompt ?? "" },
-        ]),
-        "pi.provider.request.body": capture(event.payload),
+        "pi.provider.payload.captured": config.captureProviderPayload,
+        ...(config.captureProviderPayload
+          ? { "pi.provider.request.body": capture(event.payload) }
+          : {}),
       },
       agent,
     );
@@ -180,7 +215,7 @@ export default function piOtel(pi: ExtensionAPI) {
       "pi.provider.request",
       {
         ...attrs(ctx),
-        "pi.provider.request.body": capture(event.payload),
+        "pi.provider.payload.captured": config.captureProviderPayload,
       },
       chat,
     );
@@ -190,16 +225,22 @@ export default function piOtel(pi: ExtensionAPI) {
     const telemetry = ensure();
     chat?.span.setAttributes({
       "http.response.status_code": event.status,
-      "pi.provider.response.headers": telemetry.content(event.headers),
+      "pi.provider.headers.captured": config.captureProviderHeaders,
+      ...(config.captureProviderHeaders
+        ? {
+            "pi.provider.response.headers": telemetry.content(event.headers),
+          }
+        : {}),
     });
     telemetry.event(
       "pi.provider.response",
       {
         ...attrs(ctx),
         "http.response.status_code": event.status,
-        "pi.provider.response.headers": telemetry.content(event.headers),
+        "pi.provider.headers.captured": config.captureProviderHeaders,
       },
       chat,
+      event.status >= 500 ? "ERROR" : event.status >= 400 ? "WARN" : "INFO",
     );
   });
 
@@ -215,8 +256,10 @@ export default function piOtel(pi: ExtensionAPI) {
     const telemetry = ensure();
     const usage = messageUsage(event.message);
     const common = attrs(ctx);
+    const metricCommon = metricAttributes(ctx);
+    const turnOutcome = outcome(event.message);
     const usageAttributes: Attributes = {
-      "gen_ai.response.finish_reasons": [finishReason(event.message)],
+      "gen_ai.response.finish_reasons": [turnOutcome.reason],
       ...(usage.input !== undefined
         ? { "gen_ai.usage.input_tokens": usage.input }
         : {}),
@@ -230,15 +273,20 @@ export default function piOtel(pi: ExtensionAPI) {
         ? { "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite }
         : {}),
       "gen_ai.output.messages": capture(messageContent(event.message)),
+      "error.type": turnOutcome.failed ? turnOutcome.errorType : "",
     };
     if (chat) {
       const duration = (performance.now() - chat.startedAt) / 1000;
       telemetry.histogram("gen_ai.client.operation.duration", duration, "s", {
-        ...common,
+        ...metricCommon,
         "gen_ai.operation.name": "chat",
-        "error.type": "",
+        "error.type": turnOutcome.failed ? turnOutcome.errorType : "",
       });
-      telemetry.end(chat, usageAttributes);
+      telemetry.end(
+        chat,
+        usageAttributes,
+        turnOutcome.failed ? new Error(turnOutcome.errorMessage) : undefined,
+      );
       chat = undefined;
     }
     for (const [type, value] of [
@@ -249,7 +297,7 @@ export default function piOtel(pi: ExtensionAPI) {
     ] as const) {
       if (value !== undefined) {
         telemetry.histogram("gen_ai.client.token.usage", value, "{token}", {
-          ...common,
+          ...metricCommon,
           "gen_ai.operation.name": "chat",
           "gen_ai.token.type": type,
         });
@@ -260,17 +308,31 @@ export default function piOtel(pi: ExtensionAPI) {
         "pi.gen_ai.cost.usage",
         usage.cost.total,
         "USD",
-        common,
+        metricCommon,
       );
     }
     telemetry.event(
       "pi.assistant.message",
       {
         ...common,
-        ...usageAttributes,
-        "pi.tool_result.messages": capture(event.toolResults),
+        "gen_ai.response.finish_reasons": [turnOutcome.reason],
+        ...(usage.input !== undefined
+          ? { "gen_ai.usage.input_tokens": usage.input }
+          : {}),
+        ...(usage.output !== undefined
+          ? { "gen_ai.usage.output_tokens": usage.output }
+          : {}),
+        ...(usage.cacheRead !== undefined
+          ? { "gen_ai.usage.cache_read.input_tokens": usage.cacheRead }
+          : {}),
+        ...(usage.cacheWrite !== undefined
+          ? { "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite }
+          : {}),
+        "pi.tool_result.count": event.toolResults.length,
+        "error.type": turnOutcome.failed ? turnOutcome.errorType : "",
       },
       agent,
+      turnOutcome.failed ? "ERROR" : "INFO",
     );
   });
 
@@ -301,7 +363,6 @@ export default function piOtel(pi: ExtensionAPI) {
         ...attrs(ctx),
         "gen_ai.tool.name": event.toolName,
         "gen_ai.tool.call.id": event.toolCallId,
-        "gen_ai.tool.call.arguments": telemetry.content(event.args),
       },
       operation,
     );
@@ -314,7 +375,13 @@ export default function piOtel(pi: ExtensionAPI) {
     const duration = operation
       ? (performance.now() - operation.startedAt) / 1000
       : 0;
-    const toolAttributes = {
+    const failure = event.isError
+      ? classifyToolFailure(event.toolName, event.result)
+      : undefined;
+    const failureAttributes = failure
+      ? toolFailureAttributes(failure)
+      : { "error.type": "" };
+    const spanAttributes = {
       ...attrs(ctx),
       "gen_ai.operation.name": "execute_tool",
       "gen_ai.tool.name": event.toolName,
@@ -325,23 +392,45 @@ export default function piOtel(pi: ExtensionAPI) {
         toolCallId: event.toolCallId,
         result: event.result,
       }),
-      "error.type": event.isError ? "ToolError" : "",
+      ...failureAttributes,
+    };
+    const toolMetricAttributes = {
+      ...metricAttributes(ctx),
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": event.toolName,
+      "error.type": failure?.errorType ?? "",
+      ...(failure
+        ? { "pi.tool.failure.category": failure.category }
+        : {}),
     };
     telemetry.histogram(
       "gen_ai.execute_tool.duration",
       duration,
       "s",
-      toolAttributes,
+      toolMetricAttributes,
     );
+    telemetry.count("pi.tool.execution.count", 1, {
+      ...toolMetricAttributes,
+      "pi.tool.execution.status": event.isError ? "error" : "ok",
+    });
     telemetry.event(
       "pi.tool.execution.end",
-      toolAttributes,
+      {
+        ...attrs(ctx),
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": event.toolName,
+        "gen_ai.tool.call.id": event.toolCallId,
+        ...failureAttributes,
+      },
       operation ?? agent,
+      event.isError ? "ERROR" : "INFO",
     );
     telemetry.end(
       operation,
-      toolAttributes,
-      event.isError ? new Error("Tool execution failed") : undefined,
+      spanAttributes,
+      event.isError
+        ? new Error(failure?.errorType ?? "tool_error")
+        : undefined,
     );
   });
 
@@ -374,6 +463,8 @@ export default function piOtel(pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     const telemetry = ensure();
+    const finalMessage = lastAssistantMessage(event.messages);
+    const agentOutcome = outcome(finalMessage);
     if (chat) {
       telemetry.end(
         chat,
@@ -387,32 +478,51 @@ export default function piOtel(pi: ExtensionAPI) {
     tools.clear();
     if (agent) {
       const duration = (performance.now() - agent.startedAt) / 1000;
+      const common = attrs(ctx);
+      const metricCommon = metricAttributes(ctx);
       telemetry.histogram(
         "gen_ai.invoke_agent.duration",
         duration,
         "s",
-        attrs(ctx),
+        {
+          ...metricCommon,
+          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+        },
       );
       telemetry.histogram(
         "gen_ai.invoke_agent.inference_calls",
         inferenceCalls,
         "{call}",
-        attrs(ctx),
+        metricCommon,
       );
       telemetry.histogram(
         "gen_ai.invoke_agent.tool_calls",
         toolCalls,
         "{call}",
-        attrs(ctx),
+        metricCommon,
       );
-      telemetry.end(agent, {
-        "gen_ai.response.finish_reasons": ["stop"],
-        "gen_ai.output.messages": capture(event.messages),
-      });
-      telemetry.event("pi.agent.end", {
-        ...attrs(ctx),
-        "pi.agent.messages": capture(event.messages),
-      });
+      telemetry.event(
+        "pi.agent.end",
+        {
+          ...common,
+          "gen_ai.response.finish_reasons": [agentOutcome.reason],
+          "pi.agent.message.count": event.messages.length,
+          "pi.agent.inference_call.count": inferenceCalls,
+          "pi.agent.tool_call.count": toolCalls,
+          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+        },
+        agent,
+        agentOutcome.failed ? "ERROR" : "INFO",
+      );
+      telemetry.end(
+        agent,
+        {
+          "gen_ai.response.finish_reasons": [agentOutcome.reason],
+          "gen_ai.output.messages": capture(messageContent(finalMessage)),
+          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+        },
+        agentOutcome.failed ? new Error(agentOutcome.errorMessage) : undefined,
+      );
       agent = undefined;
     }
   });
