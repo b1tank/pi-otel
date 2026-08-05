@@ -9,7 +9,10 @@ afterEach(() =>
       .splice(0)
       .map(
         (server) =>
-          new Promise<void>((resolve) => server.close(() => resolve())),
+          new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+          }),
       ),
   ),
 );
@@ -46,6 +49,7 @@ describe("Telemetry", () => {
       serviceName: "pi-test",
       serviceVersion: "test",
       exportIntervalMillis: 100,
+      exportTimeoutMillis: 100,
       contentLimit: 20,
     });
     const operation = telemetry.start("chat test", SpanKind.CLIENT, {
@@ -68,5 +72,44 @@ describe("Telemetry", () => {
       "TRUNCATED",
     );
     expect(telemetry.content(undefined)).toBe("undefined");
+  });
+
+  it("bounds shutdown when the collector does not respond", async () => {
+    const server = createServer((request) => request.resume());
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing test address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const telemetry = new Telemetry({
+      enabled: true,
+      captureContent: false,
+      captureObservabilityToolContent: false,
+      captureProviderPayload: false,
+      captureProviderHeaders: false,
+      endpoint: base,
+      tracesEndpoint: `${base}/v1/traces`,
+      metricsEndpoint: `${base}/v1/metrics`,
+      logsEndpoint: `${base}/v1/logs`,
+      headers: {},
+      resourceAttributes: {},
+      serviceName: "pi-test",
+      serviceVersion: "test",
+      exportIntervalMillis: 100,
+      exportTimeoutMillis: 50,
+      contentLimit: 20,
+    });
+    const operation = telemetry.start("chat test", SpanKind.CLIENT, {});
+    telemetry.event("pi.test", {}, operation);
+    telemetry.count("pi.test.count");
+    telemetry.end(operation);
+
+    const startedAt = performance.now();
+    await telemetry.shutdown();
+
+    expect(performance.now() - startedAt).toBeLessThan(1000);
   });
 });

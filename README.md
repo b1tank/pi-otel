@@ -87,6 +87,7 @@ Other supported variables:
 | `PI_OTEL_ENABLED` | Enable the extension without relying on endpoint inference |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP endpoint; setting it also enables export |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Comma-separated exporter headers |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | Export timeout in milliseconds; defaults to 1000 so an unavailable collector does not delay Pi shutdown |
 | `OTEL_RESOURCE_ATTRIBUTES` | Percent-encoded comma-separated resource attributes |
 | `OTEL_SERVICE_NAME` | Service name; defaults to `pi` |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds; defaults to 1000 |
@@ -128,7 +129,7 @@ Pi currently exposes tool failure as human-readable content plus `isError`, with
 
 The span hierarchy, GenAI attributes, metric names, content gate, exporter behavior, and failure isolation were informed by the OpenTelemetry implementation in GitHub Copilot's agent runtime.
 
-Exporter failures never alter agent behavior. Providers are initialized on `session_start`, flushed on `session_shutdown`, and all extension handlers remain passive.
+Exporter failures never alter agent behavior. Providers are initialized on `session_start` and shut down on `session_shutdown`, which flushes pending telemetry once. Exports time out after one second by default so an unavailable collector does not significantly delay Pi shutdown. All extension handlers remain passive.
 
 ## Development
 

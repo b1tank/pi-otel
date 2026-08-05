@@ -56,12 +56,17 @@ export class Telemetry {
       "pi.otel.version": instrumentationVersion,
       "pi.otel.capture_content": config.captureContent,
     })
-    const exporterOptions = (url: string) => ({ url, headers: config.headers })
+    const exporterOptions = (url: string) => ({
+      url,
+      headers: config.headers,
+      timeoutMillis: config.exportTimeoutMillis,
+    })
 
     this.tracerProvider = new BasicTracerProvider({
       resource,
       spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter(exporterOptions(config.tracesEndpoint)), {
         scheduledDelayMillis: 500,
+        exportTimeoutMillis: config.exportTimeoutMillis,
       })],
     })
     this.tracer = this.tracerProvider.getTracer(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
@@ -71,6 +76,7 @@ export class Telemetry {
       readers: [new PeriodicExportingMetricReader({
         exporter: new OTLPMetricExporter(exporterOptions(config.metricsEndpoint)),
         exportIntervalMillis: config.exportIntervalMillis,
+        exportTimeoutMillis: Math.min(config.exportTimeoutMillis, config.exportIntervalMillis),
       })],
     })
     this.meter = this.meterProvider.getMeter(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
@@ -80,6 +86,7 @@ export class Telemetry {
       processors: [new BatchLogRecordProcessor({
         exporter: new OTLPLogExporter(exporterOptions(config.logsEndpoint)),
         scheduledDelayMillis: 500,
+        exportTimeoutMillis: config.exportTimeoutMillis,
       })],
     })
     this.logger = this.loggerProvider.getLogger(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
@@ -183,7 +190,6 @@ export class Telemetry {
   async shutdown() {
     if (this.closed) return
     this.closed = true
-    await this.flush()
     await Promise.allSettled([
       this.tracerProvider.shutdown(),
       this.meterProvider.shutdown(),

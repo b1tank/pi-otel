@@ -13,6 +13,7 @@ export interface PiOtelConfig {
   serviceName: string;
   serviceVersion: string;
   exportIntervalMillis: number;
+  exportTimeoutMillis: number;
   contentLimit: number;
 }
 
@@ -85,6 +86,10 @@ export function resolveConfig(
     serviceVersion: env.PI_OTEL_SERVICE_VERSION || "unknown",
     exportIntervalMillis: positiveNumber(
       env.OTEL_METRIC_EXPORT_INTERVAL,
+      1000,
+    ),
+    exportTimeoutMillis: positiveNumber(
+      env.OTEL_EXPORTER_OTLP_TIMEOUT,
       1000,
     ),
     contentLimit: positiveNumber(env.PI_OTEL_CONTENT_MAX_LENGTH, 16_384),
