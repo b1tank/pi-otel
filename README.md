@@ -4,6 +4,8 @@ Vendor-neutral OpenTelemetry instrumentation for the [Pi coding agent](https://g
 
 `pi-otel` is a Pi extension that exports **traces, metrics, and logs** over OTLP/HTTP. It follows the OpenTelemetry GenAI semantic conventions where Pi's extension lifecycle exposes equivalent operations, and uses `pi.*` attributes only for Pi-specific details.
 
+> **Early open-source release.** Tested with Pi 0.84.x on Ubuntu Linux and macOS using Node.js 20 or newer. Omarchy, Arch Linux, and Windows have not yet been separately qualified. The package is installed from Git and remains marked private in npm metadata to prevent accidental registry publication.
+
 ## Signals
 
 ### Traces

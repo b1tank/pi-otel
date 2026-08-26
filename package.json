@@ -5,6 +5,20 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/b1tank/pi-otel.git"
+  },
+  "homepage": "https://github.com/b1tank/pi-otel#readme",
+  "bugs": {
+    "url": "https://github.com/b1tank/pi-otel/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "opentelemetry",
+    "genai-observability",
+    "coding-agent"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -27,7 +41,7 @@
     "@opentelemetry/semantic-conventions": "^1.40.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
