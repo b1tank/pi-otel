@@ -128,7 +128,11 @@ function keyValues(value: string | undefined, decode = false) {
   }));
 }
 function signalEndpoint(signal: "TRACES" | "METRICS" | "LOGS", base: string, env: NodeJS.ProcessEnv, settings: Record<string, unknown>) {
-  return env[`OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`] || (settings[`${signal.toLowerCase()}Endpoint`] as string | undefined) || `${base.replace(/\/$/, "")}/v1/${signal.toLowerCase()}`;
+  const signalEnv = env[`OTEL_EXPORTER_OTLP_${signal}_ENDPOINT`];
+  if (signalEnv) return signalEnv;
+  const genericEnv = env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (genericEnv) return `${genericEnv.replace(/\/$/, "")}/v1/${signal.toLowerCase()}`;
+  return (settings[`${signal.toLowerCase()}Endpoint`] as string | undefined) || `${base.replace(/\/$/, "")}/v1/${signal.toLowerCase()}`;
 }
 
 export function resolveConfig(env: NodeJS.ProcessEnv = process.env): PiOtelConfig {
@@ -156,25 +160,37 @@ export function resolveConfig(env: NodeJS.ProcessEnv = process.env): PiOtelConfi
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   };
-  const headers = { ...record(file.headers), ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS) };
+  const headers = { ...record(file.headers), ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS, true) };
   const signalHeaders = (signal: "TRACES" | "METRICS" | "LOGS") => ({
+    ...record(file[`${signal.toLowerCase()}Headers`]),
     ...headers,
-    ...keyValues(env[`OTEL_EXPORTER_OTLP_${signal}_HEADERS`]),
+    ...keyValues(env[`OTEL_EXPORTER_OTLP_${signal}_HEADERS`], true),
   });
   const protocol = String(get("protocol", "OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"));
-  const exporter = (value: string, signal: string) => {
+  const exporter = (value: string, signal: "TRACES" | "METRICS" | "LOGS") => {
+    if (value === "none") return value;
     if (protocol !== "http/protobuf") {
       console.warn(`[pi-otel] Unsupported OTLP protocol '${protocol}'; disabling ${signal}`);
       return "none";
     }
-    if (value === "otlp" || value === "none") return value;
-    console.warn(`[pi-otel] Unsupported ${signal} exporter '${value}'; disabling ${signal}`);
-    return "none";
+    if (value !== "otlp") {
+      console.warn(`[pi-otel] Unsupported ${signal.toLowerCase()} exporter '${value}'; disabling ${signal.toLowerCase()}`);
+      return "none";
+    }
+    const url = signalEndpoint(signal, endpoint, env, file);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("unsupported URL scheme");
+    } catch {
+      console.warn(`[pi-otel] Invalid ${signal.toLowerCase()} OTLP endpoint '${url}'; disabling ${signal.toLowerCase()}`);
+      return "none";
+    }
+    return value;
   };
   const enabled = env.PI_OTEL_ENABLED !== undefined ? truthy(env.PI_OTEL_ENABLED) : (truthy(file.enabled) || Boolean(env.OTEL_EXPORTER_OTLP_ENDPOINT));
   return {
     enabled, bootstrapCreated: created, bootstrapWarning,
-    metricsExporter: exporter(String(get("metricsExporter", "OTEL_METRICS_EXPORTER", "otlp")), "metrics"), logsExporter: exporter(String(get("logsExporter", "OTEL_LOGS_EXPORTER", "otlp")), "logs"), tracesExporter: exporter(String(get("tracesExporter", "OTEL_TRACES_EXPORTER", "otlp")), "traces"), protocol,
+    metricsExporter: exporter(String(get("metricsExporter", "OTEL_METRICS_EXPORTER", "otlp")), "METRICS"), logsExporter: exporter(String(get("logsExporter", "OTEL_LOGS_EXPORTER", "otlp")), "LOGS"), tracesExporter: exporter(String(get("tracesExporter", "OTEL_TRACES_EXPORTER", "otlp")), "TRACES"), protocol,
     captureContent: aggregate, capture, captureObservabilityToolContent: capture.observabilityToolContent, captureProviderPayload: capture.providerPayload, captureProviderHeaders: capture.providerHeaders,
     endpoint, tracesEndpoint: signalEndpoint("TRACES", endpoint, env, file), metricsEndpoint: signalEndpoint("METRICS", endpoint, env, file), logsEndpoint: signalEndpoint("LOGS", endpoint, env, file), headers, tracesHeaders: signalHeaders("TRACES"), metricsHeaders: signalHeaders("METRICS"), logsHeaders: signalHeaders("LOGS"),
     resourceAttributes: { ...record(file.resourceAttributes), ...keyValues(env.OTEL_RESOURCE_ATTRIBUTES, true) }, serviceName: env.OTEL_SERVICE_NAME || String(file.serviceName || "pi"), serviceVersion: env.PI_OTEL_SERVICE_VERSION || String(file.serviceVersion || "unknown"),

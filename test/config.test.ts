@@ -103,7 +103,44 @@ describe("resolveConfig", () => {
     expect(config.serviceName).toBe("env-service");
     expect(config.serviceVersion).toBe("1.2.3");
     expect(config.resourceAttributes).toEqual({ team: "runtime", region: "test", encoded: "hello world" });
-    expect(config.headers.authorization).toBe("Bearer%20env");
+    expect(config.headers.authorization).toBe("Bearer env");
+  });
+
+  it("applies signal-specific endpoints and merges signal headers over generic values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-otel-signals-"));
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ "pi-otel": {
+      enabled: true,
+      endpoint: "http://settings:4318",
+      tracesEndpoint: "http://trace-settings/v1/traces",
+      headers: { shared: "settings", only_settings: "yes" },
+      tracesHeaders: { shared: "trace-settings" },
+    } }));
+    const config = resolveForTest({
+      PI_CODING_AGENT_DIR: dir,
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://env:4318/",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://trace-env/v1/custom",
+      OTEL_EXPORTER_OTLP_HEADERS: "shared=generic%20env,generic=yes",
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: "shared=signal%20env",
+    });
+    expect(config.tracesEndpoint).toBe("http://trace-env/v1/custom");
+    expect(config.metricsEndpoint).toBe("http://env:4318/v1/metrics");
+    expect(config.tracesHeaders).toEqual({ shared: "signal env", only_settings: "yes", generic: "yes" });
+    expect(config.logsHeaders?.shared).toBe("generic env");
+  });
+
+  it("disables only invalid or unsupported signals", () => {
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const config = resolveForTest({
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "file:///tmp/metrics",
+        OTEL_TRACES_EXPORTER: "unsupported",
+      });
+      expect(config.metricsExporter).toBe("none");
+      expect(config.tracesExporter).toBe("none");
+      expect(config.logsExporter).toBe("otlp");
+    } finally { console.warn = warn; }
   });
 
   it("falls back from invalid numeric settings", () => {
