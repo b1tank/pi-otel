@@ -12,7 +12,7 @@ import {
 } from "./sanitize.js";
 import { SpanKind, Telemetry, type Operation } from "./telemetry.js";
 
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 
 type Usage = {
   input?: number;

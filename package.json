@@ -1,6 +1,6 @@
 {
   "name": "@b1tank/pi-otel",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Vendor-neutral OpenTelemetry extension for the Pi coding agent",
   "type": "module",
   "license": "MIT",
