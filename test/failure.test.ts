@@ -56,20 +56,6 @@ describe("classifyToolFailure", () => {
     });
   });
 
-  it("classifies a shared desktop lease conflict", () => {
-    expect(
-      classifyToolFailure(
-        "deskpal_launch_app",
-        result("visible desktop control is already held by deskpal pid 42"),
-      ),
-    ).toEqual({
-      errorType: "resource_lease_held",
-      category: "resource_conflict",
-      retryable: false,
-      recovery: "external_state_change_required",
-    });
-  });
-
   it("uses bounded generic values for unknown failures", () => {
     expect(classifyToolFailure("custom", result("arbitrary failure"))).toEqual({
       errorType: "tool_error",

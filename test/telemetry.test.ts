@@ -74,6 +74,52 @@ describe("Telemetry", () => {
     expect(telemetry.content(undefined)).toBe("undefined");
   });
 
+  it("disables selected signals without suppressing enabled signals", async () => {
+    const paths: string[] = [];
+    const server = createServer((request, response) => {
+      paths.push(request.url ?? "");
+      request.resume();
+      response.writeHead(200, { "content-type": "application/x-protobuf" });
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing test address");
+    const base = `http://127.0.0.1:${address.port}`;
+    const telemetry = new Telemetry({
+      enabled: true,
+      tracesExporter: "none",
+      logsExporter: "none",
+      metricsExporter: "otlp",
+      captureContent: false,
+      captureObservabilityToolContent: false,
+      captureProviderPayload: false,
+      captureProviderHeaders: false,
+      endpoint: base,
+      tracesEndpoint: `${base}/v1/traces`,
+      metricsEndpoint: `${base}/v1/metrics`,
+      logsEndpoint: `${base}/v1/logs`,
+      headers: {},
+      resourceAttributes: {},
+      serviceName: "pi-test",
+      serviceVersion: "test",
+      exportIntervalMillis: 100,
+      exportTimeoutMillis: 100,
+      contentLimit: 20,
+    });
+    const operation = telemetry.start("chat test", SpanKind.CLIENT, {});
+    telemetry.event("pi.test", {}, operation);
+    telemetry.count("pi.test.count");
+    telemetry.histogram("pi.test.duration", 0.1, "s");
+    telemetry.end(operation);
+    await telemetry.shutdown();
+
+    expect(paths).toContain("/v1/metrics");
+    expect(paths).not.toContain("/v1/traces");
+    expect(paths).not.toContain("/v1/logs");
+  });
+
   it("bounds shutdown when the collector does not respond", async () => {
     const server = createServer((request) => request.resume());
     servers.push(server);

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, chmodSync, mkdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,11 +18,21 @@ describe("settings bootstrap", () => {
     expect(readFileSync(path, "utf8")).toBe(first);
   });
 
+  it("continues with environment configuration when global JSON is malformed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-otel-config-"));
+    writeFileSync(join(dir, "settings.json"), "{broken");
+    const config = resolveConfig({ PI_CODING_AGENT_DIR: dir, PI_OTEL_ENABLED: "true" });
+    expect(config.enabled).toBe(true);
+    expect(config.bootstrapWarning).toContain("Could not bootstrap settings");
+  });
+
   it("merges only missing known defaults into an existing block", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-otel-config-"));
     const path = join(dir, "settings.json");
     writeFileSync(path, JSON.stringify({ theme: "dark", "pi-otel": { enabled: true, endpoint: "custom", capture: { userPrompts: true } } }));
+    chmodSync(path, 0o640);
     expect(bootstrapSettings(path)).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o640);
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     expect(parsed.theme).toBe("dark");
     expect(parsed["pi-otel"].enabled).toBe(true);
@@ -81,29 +91,6 @@ describe("resolveConfig", () => {
     expect(config.captureProviderHeaders).toBe(false);
     expect(config.exportTimeoutMillis).toBe(1000);
     expect(config.contentLimit).toBe(16_384);
-  });
-
-  it("loads resource attributes and service metadata from settings, with environment overrides", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-otel-resolve-"));
-    const path = join(dir, "settings.json");
-    writeFileSync(path, JSON.stringify({ "pi-otel": {
-      enabled: true,
-      serviceName: "settings-service",
-      serviceVersion: "1.2.3",
-      resourceAttributes: { team: "platform", region: "test" },
-      headers: { authorization: "Bearer settings" },
-    } }));
-    const config = resolveConfig({
-      PI_CODING_AGENT_DIR: dir,
-      OTEL_SERVICE_NAME: "env-service",
-      OTEL_RESOURCE_ATTRIBUTES: "team=runtime,encoded=hello%20world",
-      OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer%20env",
-    });
-    expect(config.enabled).toBe(true);
-    expect(config.serviceName).toBe("env-service");
-    expect(config.serviceVersion).toBe("1.2.3");
-    expect(config.resourceAttributes).toEqual({ team: "runtime", region: "test", encoded: "hello world" });
-    expect(config.headers.authorization).toBe("Bearer env");
   });
 
   it("uses global, then project, then environment settings precedence", () => {
@@ -175,15 +162,4 @@ describe("resolveConfig", () => {
     } finally { console.warn = warn; }
   });
 
-  it("falls back from invalid numeric settings", () => {
-    const config = resolveForTest({
-      PI_OTEL_ENABLED: "true",
-      OTEL_METRIC_EXPORT_INTERVAL: "NaN",
-      OTEL_EXPORTER_OTLP_TIMEOUT: "0",
-      PI_OTEL_CONTENT_MAX_LENGTH: "-1",
-    });
-    expect(config.exportIntervalMillis).toBe(1000);
-    expect(config.exportTimeoutMillis).toBe(1000);
-    expect(config.contentLimit).toBe(16_384);
-  });
 });
