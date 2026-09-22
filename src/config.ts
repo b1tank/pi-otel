@@ -141,16 +141,20 @@ export function resolveConfig(env: NodeJS.ProcessEnv = process.env): PiOtelConfi
   const created = bootstrapSettings(path, (message) => { bootstrapWarning = message; });
   const global = readSettings(path)["pi-otel"];
   const project = readSettings(join(process.cwd(), ".pi", "settings.json"))["pi-otel"];
-  const file = { ...DEFAULTS, ...(global && typeof global === "object" ? global : {}), ...(project && typeof project === "object" ? project : {}) } as Record<string, any>;
-  const captureFile = { ...DEFAULTS.capture, ...(file.capture && typeof file.capture === "object" ? file.capture : {}) } as Record<string, unknown>;
+  const globalSettings = global && typeof global === "object" ? global as Record<string, any> : {};
+  const projectSettings = project && typeof project === "object" ? project as Record<string, any> : {};
+  const file = { ...DEFAULTS, ...globalSettings, ...projectSettings } as Record<string, any>;
+  const captureFile = { ...DEFAULTS.capture, ...(globalSettings.capture ?? {}), ...(projectSettings.capture ?? {}) } as Record<string, unknown>;
   const get = (name: string, envName: string, fallback: unknown) => env[envName] ?? file[name] ?? fallback;
   const aggregate = truthy(env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT) || truthy(env.PI_OTEL_CAPTURE_CONTENT) || truthy(file.captureContent);
+  const captureGate = (name: keyof CaptureConfig, envName: string) =>
+    env[envName] !== undefined ? truthy(env[envName]) : aggregate || truthy(captureFile[name]);
   const capture: CaptureConfig = {
-    userPrompts: truthy(get("userPrompts", "OTEL_LOG_USER_PROMPTS", captureFile.userPrompts)) || aggregate,
-    assistantResponses: truthy(get("assistantResponses", "OTEL_LOG_ASSISTANT_RESPONSES", captureFile.assistantResponses)) || aggregate,
-    toolDetails: truthy(get("toolDetails", "OTEL_LOG_TOOL_DETAILS", captureFile.toolDetails)) || aggregate,
-    toolContent: truthy(get("toolContent", "OTEL_LOG_TOOL_CONTENT", captureFile.toolContent)) || aggregate,
-    systemInstructions: truthy(get("systemInstructions", "PI_OTEL_CAPTURE_SYSTEM_INSTRUCTIONS", captureFile.systemInstructions)) || aggregate,
+    userPrompts: captureGate("userPrompts", "OTEL_LOG_USER_PROMPTS"),
+    assistantResponses: captureGate("assistantResponses", "OTEL_LOG_ASSISTANT_RESPONSES"),
+    toolDetails: captureGate("toolDetails", "OTEL_LOG_TOOL_DETAILS"),
+    toolContent: captureGate("toolContent", "OTEL_LOG_TOOL_CONTENT"),
+    systemInstructions: captureGate("systemInstructions", "PI_OTEL_CAPTURE_SYSTEM_INSTRUCTIONS"),
     providerPayload: truthy(get("providerPayload", "PI_OTEL_CAPTURE_PROVIDER_PAYLOAD", captureFile.providerPayload)),
     providerHeaders: truthy(get("providerHeaders", "PI_OTEL_CAPTURE_PROVIDER_HEADERS", captureFile.providerHeaders)),
     observabilityToolContent: truthy(get("observabilityToolContent", "PI_OTEL_CAPTURE_OBSERVABILITY_TOOL_CONTENT", captureFile.observabilityToolContent)),

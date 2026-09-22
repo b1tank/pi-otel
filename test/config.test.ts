@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -104,6 +104,38 @@ describe("resolveConfig", () => {
     expect(config.serviceVersion).toBe("1.2.3");
     expect(config.resourceAttributes).toEqual({ team: "runtime", region: "test", encoded: "hello world" });
     expect(config.headers.authorization).toBe("Bearer env");
+  });
+
+  it("uses global, then project, then environment settings precedence", () => {
+    const global = mkdtempSync(join(tmpdir(), "pi-otel-global-"));
+    const project = mkdtempSync(join(tmpdir(), "pi-otel-project-"));
+    mkdirSync(join(project, ".pi"));
+    writeFileSync(join(global, "settings.json"), JSON.stringify({ "pi-otel": { enabled: false, endpoint: "http://global", contentMaxLength: 100 } }));
+    writeFileSync(join(project, ".pi", "settings.json"), JSON.stringify({ "pi-otel": { enabled: true, endpoint: "http://project", contentMaxLength: 200 } }));
+    const previous = process.cwd();
+    try {
+      process.chdir(project);
+      const config = resolveConfig({ PI_CODING_AGENT_DIR: global, PI_OTEL_ENABLED: "false", PI_OTEL_CONTENT_MAX_LENGTH: "300" });
+      expect(config.enabled).toBe(false);
+      expect(config.endpoint).toBe("http://project");
+      expect(config.contentLimit).toBe(300);
+    } finally { process.chdir(previous); }
+  });
+
+  it("keeps capture gates independently overridable and aggregate capture excludes provider data", () => {
+    const config = resolveForTest({
+      PI_OTEL_CAPTURE_CONTENT: "true",
+      OTEL_LOG_USER_PROMPTS: "false",
+      PI_OTEL_CAPTURE_PROVIDER_PAYLOAD: "false",
+    });
+    expect(config.capture?.userPrompts).toBe(false);
+    expect(config.capture?.assistantResponses).toBe(true);
+    expect(config.capture?.toolDetails).toBe(true);
+    expect(config.capture?.toolContent).toBe(true);
+    expect(config.capture?.systemInstructions).toBe(true);
+    expect(config.capture?.providerPayload).toBe(false);
+    expect(config.capture?.providerHeaders).toBe(false);
+    expect(config.capture?.observabilityToolContent).toBe(false);
   });
 
   it("applies signal-specific endpoints and merges signal headers over generic values", () => {
