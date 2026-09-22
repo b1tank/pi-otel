@@ -226,7 +226,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 pi
 ```
 
-Send a prompt that causes a tool call and a final response. The collector output should show `invoke_agent pi`, `chat <model>`, and `execute_tool <tool>` spans, plus metrics and structured lifecycle logs. Content remains redacted by default; opt into sensitive capture only when appropriate (see [Sensitive content capture](#sensitive-content-capture)). Stop Pi normally to flush telemetry. Use `OTEL_EXPORTER_OTLP_TIMEOUT` to bound export and shutdown delay if the collector is unavailable.
+Send Pi a prompt that triggers a tool call. The collector should show agent, chat, and tool spans, plus metrics and logs. Content is redacted by default; see [Sensitive content capture](#sensitive-content-capture). Stop Pi normally to flush telemetry.
 
 ## Development
 
