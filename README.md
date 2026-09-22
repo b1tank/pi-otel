@@ -74,14 +74,14 @@ pi install ~/pi-otel
 
 ## Configuration
 
-On first load, the extension idempotently adds a `pi-otel` block to `~/.pi/agent/settings.json` (or `$PI_CODING_AGENT_DIR/settings.json`). Existing settings and an existing `pi-otel` block are preserved; project `.pi/settings.json` is never created automatically. A malformed or unwritable settings file only produces a warning and does not prevent Pi from starting.
+On first load, the extension idempotently adds an enabled `pi-otel` block to `~/.pi/agent/settings.json` (or `$PI_CODING_AGENT_DIR/settings.json`). It exports redacted telemetry to OTelux by default; all content-capture options remain off. Existing settings and an existing `pi-otel` block are preserved; project `.pi/settings.json` is never created automatically. A malformed or unwritable settings file only produces a warning and does not prevent Pi from starting.
 
 The generated defaults are safe and redacted:
 
 ```json
 {
   "pi-otel": {
-    "enabled": false,
+    "enabled": true,
     "metricsExporter": "otlp",
     "logsExporter": "otlp",
     "tracesExporter": "otlp",

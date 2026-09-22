@@ -13,7 +13,7 @@ describe("settings bootstrap", () => {
     const first = readFileSync(path, "utf8");
     const parsed = JSON.parse(first);
     expect(parsed.theme).toBe("dark");
-    expect(parsed["pi-otel"].enabled).toBe(false);
+    expect(parsed["pi-otel"].enabled).toBe(true);
     expect(bootstrapSettings(path)).toBe(false);
     expect(readFileSync(path, "utf8")).toBe(first);
   });
@@ -84,9 +84,9 @@ describe("resolveConfig", () => {
     });
   });
 
-  it("stays disabled without explicit enablement or an endpoint", () => {
+  it("is enabled by default without enabling content capture", () => {
     const config = resolveForTest({});
-    expect(config.enabled).toBe(false);
+    expect(config.enabled).toBe(true);
     expect(config.captureProviderPayload).toBe(false);
     expect(config.captureProviderHeaders).toBe(false);
     expect(config.exportTimeoutMillis).toBe(1000);

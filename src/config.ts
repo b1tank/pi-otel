@@ -49,8 +49,8 @@ export interface PiOtelConfig {
 }
 
 const DEFAULTS = {
-  enabled: false, metricsExporter: "otlp", logsExporter: "otlp", tracesExporter: "otlp",
-  protocol: "http/protobuf", endpoint: "http://localhost:4318",
+  enabled: true, metricsExporter: "otlp", logsExporter: "otlp", tracesExporter: "otlp",
+  protocol: "http/protobuf", endpoint: "http://127.0.0.1:4318",
   capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false,
     systemInstructions: false, providerPayload: false, providerHeaders: false, observabilityToolContent: false },
   contentMaxLength: 16384, metricExportInterval: 1000, logsExportInterval: 5000, exportTimeout: 1000,
