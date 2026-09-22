@@ -93,14 +93,25 @@ function outcome(message: unknown) {
 
 export default function piOtel(pi: ExtensionAPI) {
   const config = resolveConfig();
-  if (!config.enabled) return;
+  if (!config.enabled) {
+    if (config.bootstrapCreated || config.bootstrapWarning) {
+      pi.on("session_start", (_event, ctx) => {
+        if (!ctx.hasUI) return;
+        if (config.bootstrapWarning) ctx.ui.notify(config.bootstrapWarning, "warning");
+        else if (config.bootstrapCreated) ctx.ui.notify("Created default pi-otel settings in the global Pi settings file (telemetry remains disabled).", "info");
+      });
+    }
+    return;
+  }
 
   let otel: Telemetry | undefined;
   let sessionID = "unknown";
   let agent: Operation | undefined;
   let chat: Operation | undefined;
+  let chatSawFirstToken = false;
   let prompt: string | undefined;
   let systemPrompt: string | undefined;
+  let providerMessages: unknown[] | undefined;
   let finalAgentMessage: unknown;
   let inferenceCalls = 0;
   let toolCalls = 0;
@@ -120,18 +131,34 @@ export default function piOtel(pi: ExtensionAPI) {
     return otel;
   };
 
-  const capture = (value: unknown) => {
+  const capture = (value: unknown, gate: keyof NonNullable<typeof config.capture> = "userPrompts") => {
     const telemetry = ensure();
+    const enabled = config.capture?.[gate] ?? config.captureContent;
     return telemetry.content(
-      sanitizeForCapture(
-        value,
-        observabilityCallIds,
-        config.captureObservabilityToolContent,
-      ),
+      sanitizeForCapture(value, observabilityCallIds, config.captureObservabilityToolContent),
+      enabled,
     );
   };
 
+  const captureProviderMessages = (messages: unknown[] | undefined) => {
+    if (!messages) return undefined;
+    return messages.map((message) => {
+      const role = message && typeof message === "object" && typeof (message as { role?: unknown }).role === "string"
+        ? (message as { role: string }).role
+        : "unknown";
+      const gate = role === "user" ? "userPrompts"
+        : role === "assistant" ? "assistantResponses"
+          : role === "system" ? "systemInstructions"
+            : "toolContent" as const;
+      return capture(message, gate);
+    });
+  };
+
   pi.on("session_start", (event, ctx) => {
+    if (ctx.hasUI) {
+      if (config.bootstrapWarning) ctx.ui.notify(config.bootstrapWarning, "warning");
+      else if (config.bootstrapCreated) ctx.ui.notify("Created default pi-otel settings in the global Pi settings file (telemetry remains disabled).", "info");
+    }
     sessionID = ctx.sessionManager.getSessionId();
     const telemetry = ensure();
     telemetry.count("pi.session.count", 1, {
@@ -150,6 +177,7 @@ export default function piOtel(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, ctx) => {
     prompt = event.prompt;
     systemPrompt = event.systemPrompt;
+    providerMessages = undefined;
     ensure().event(
       "pi.user.message",
       {
@@ -165,6 +193,10 @@ export default function piOtel(pi: ExtensionAPI) {
       },
       agent,
     );
+  });
+
+  pi.on("context", (event) => {
+    providerMessages = event.messages;
   });
 
   pi.on("agent_start", (_event, ctx) => {
@@ -184,10 +216,10 @@ export default function piOtel(pi: ExtensionAPI) {
       "gen_ai.agent.version": config.serviceVersion,
       "gen_ai.input.messages": telemetry.content([
         { role: "user", parts: [{ type: "text", content: prompt ?? "" }] },
-      ]),
+      ], config.capture?.userPrompts ?? config.captureContent),
       "gen_ai.system_instructions": telemetry.content([
         { type: "text", content: systemPrompt ?? "" },
-      ]),
+      ], config.capture?.systemInstructions ?? config.captureContent),
     });
     telemetry.event("pi.agent.start", attrs(ctx), agent);
   });
@@ -203,6 +235,7 @@ export default function piOtel(pi: ExtensionAPI) {
     }
     inferenceCalls++;
     const model = ctx.model?.id ?? "unknown";
+    chatSawFirstToken = false;
     chat = telemetry.start(
       `chat ${model}`,
       SpanKind.CLIENT,
@@ -210,6 +243,7 @@ export default function piOtel(pi: ExtensionAPI) {
         ...attrs(ctx),
         "gen_ai.operation.name": "chat",
         "gen_ai.request.stream": true,
+        ...(providerMessages ? { "gen_ai.input.messages": captureProviderMessages(providerMessages) } : {}),
         "pi.provider.payload.captured": config.captureProviderPayload,
         ...(config.captureProviderPayload
           ? { "pi.provider.request.body": capture(event.payload) }
@@ -225,6 +259,18 @@ export default function piOtel(pi: ExtensionAPI) {
       },
       chat,
     );
+  });
+
+  pi.on("message_update", (event) => {
+    if (!chat || chatSawFirstToken) return;
+    const message = event.message as { content?: unknown } | undefined;
+    const content = message?.content;
+    const hasText = typeof content === "string"
+      ? content.length > 0
+      : Array.isArray(content) && content.some((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text");
+    if (!hasText) return;
+    chatSawFirstToken = true;
+    chat.span.setAttribute("pi.provider.time_to_first_token_ms", performance.now() - chat.startedAt);
   });
 
   pi.on("after_provider_response", (event, ctx) => {
@@ -278,7 +324,7 @@ export default function piOtel(pi: ExtensionAPI) {
       ...(usage.cacheWrite !== undefined
         ? { "gen_ai.usage.cache_creation.input_tokens": usage.cacheWrite }
         : {}),
-      "gen_ai.output.messages": capture(messageContent(event.message)),
+      "gen_ai.output.messages": capture(messageContent(event.message), "assistantResponses"),
       "error.type": turnOutcome.failed ? turnOutcome.errorType : "",
     };
     if (chat) {
@@ -294,6 +340,7 @@ export default function piOtel(pi: ExtensionAPI) {
         turnOutcome.failed ? new Error(turnOutcome.errorMessage) : undefined,
       );
       chat = undefined;
+      chatSawFirstToken = false;
     }
     for (const [type, value] of [
       ["input", usage.input],
@@ -358,7 +405,7 @@ export default function piOtel(pi: ExtensionAPI) {
         "gen_ai.tool.name": event.toolName,
         "gen_ai.tool.call.id": event.toolCallId,
         "gen_ai.tool.type": "function",
-        "gen_ai.tool.call.arguments": telemetry.content(event.args),
+        "gen_ai.tool.call.arguments": telemetry.content(event.args, config.capture?.toolDetails ?? config.captureContent),
       },
       chat ?? agent,
     );
@@ -397,7 +444,7 @@ export default function piOtel(pi: ExtensionAPI) {
         toolName: event.toolName,
         toolCallId: event.toolCallId,
         result: event.result,
-      }),
+      }, "toolContent"),
       ...failureAttributes,
     };
     const toolMetricAttributes = {
@@ -441,16 +488,59 @@ export default function piOtel(pi: ExtensionAPI) {
   });
 
   pi.on("session_compact", (event, ctx) => {
-    ensure().event(
+    const telemetry = ensure();
+    const compaction = telemetry.start(
+      "compact_context",
+      SpanKind.INTERNAL,
+      {
+        ...attrs(ctx),
+        "gen_ai.operation.name": "compact_context",
+        "pi.compaction.reason": event.reason,
+        "pi.compaction.retry": event.willRetry,
+        "pi.compaction.entry": capture(event.compactionEntry, "assistantResponses"),
+      },
+      agent,
+    );
+    telemetry.event(
       "pi.session.compaction",
       {
         ...attrs(ctx),
         "pi.compaction.reason": event.reason,
         "pi.compaction.retry": event.willRetry,
-        "pi.compaction.entry": capture(event.compactionEntry),
+      },
+      compaction,
+    );
+    telemetry.end(compaction);
+  });
+
+  pi.on("session_tree", (event, ctx) => {
+    const entry = event.summaryEntry;
+    if (!entry) return;
+    const telemetry = ensure();
+    const summary = typeof entry.summary === "string" ? entry.summary : "";
+    const operation = telemetry.start(
+      "branch_summary",
+      SpanKind.INTERNAL,
+      {
+        ...attrs(ctx),
+        "gen_ai.operation.name": "branch_summary",
+        "pi.branch_summary.from_extension": Boolean(event.fromExtension),
+        "pi.branch_summary.from_hook": Boolean(entry.fromHook),
+        ...(entry.usage?.input !== undefined ? { "gen_ai.usage.input_tokens": entry.usage.input } : {}),
+        ...(entry.usage?.output !== undefined ? { "gen_ai.usage.output_tokens": entry.usage.output } : {}),
+        "gen_ai.output.messages": telemetry.content(
+          [{ role: "assistant", content: summary }],
+          config.capture?.assistantResponses ?? config.captureContent,
+        ),
       },
       agent,
     );
+    telemetry.event("pi.session.branch_summary", {
+      ...attrs(ctx),
+      "pi.branch_summary.from_extension": Boolean(event.fromExtension),
+      "pi.branch_summary.from_hook": Boolean(entry.fromHook),
+    }, operation);
+    telemetry.end(operation);
   });
 
   pi.on("model_select", (event, ctx) => {

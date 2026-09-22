@@ -74,6 +74,43 @@ pi install ~/pi-otel
 
 ## Configuration
 
+On first load, the extension idempotently adds a `pi-otel` block to `~/.pi/agent/settings.json` (or `$PI_CODING_AGENT_DIR/settings.json`). Existing settings and an existing `pi-otel` block are preserved; project `.pi/settings.json` is never created automatically. A malformed or unwritable settings file only produces a warning and does not prevent Pi from starting.
+
+The generated defaults are safe and redacted:
+
+```json
+{
+  "pi-otel": {
+    "enabled": false,
+    "metricsExporter": "otlp",
+    "logsExporter": "otlp",
+    "tracesExporter": "otlp",
+    "protocol": "http/protobuf",
+    "endpoint": "http://localhost:4318",
+    "capture": {
+      "userPrompts": false,
+      "assistantResponses": false,
+      "toolDetails": false,
+      "toolContent": false,
+      "systemInstructions": false,
+      "providerPayload": false,
+      "providerHeaders": false,
+      "observabilityToolContent": false
+    },
+    "contentMaxLength": 16384,
+    "metricExportInterval": 1000,
+    "logsExportInterval": 5000,
+    "exportTimeout": 1000,
+    "serviceName": "pi",
+    "serviceVersion": "unknown",
+    "resourceAttributes": {},
+    "headers": {}
+  }
+}
+```
+
+Configuration precedence is built-in defaults, global settings, project settings, then environment variables. Environment variables therefore always win and are suitable for CI. Optional `serviceName`, `serviceVersion`, `resourceAttributes`, and `headers` values can also be placed inside the `pi-otel` settings block. Keep credentials in environment variables rather than settings files.
+
 Set a standard OTLP base endpoint before launching Pi:
 
 ```bash
@@ -89,6 +126,14 @@ The generic endpoint gets `/v1/traces`, `/v1/metrics`, and `/v1/logs` appended. 
 - `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
 
 Other supported variables:
+
+| Variable | Purpose |
+|---|---|
+| `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, `OTEL_TRACES_EXPORTER` | Select `otlp` or `none` per signal |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (default) |
+| `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES` | Independently capture prompts or responses |
+| `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT` | Independently capture tool arguments or results |
+| `PI_OTEL_CAPTURE_SYSTEM_INSTRUCTIONS` | Capture effective system instructions |
 
 | Variable | Purpose |
 |---|---|

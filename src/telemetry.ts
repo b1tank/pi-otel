@@ -56,25 +56,23 @@ export class Telemetry {
       "pi.otel.version": instrumentationVersion,
       "pi.otel.capture_content": config.captureContent,
     })
-    const exporterOptions = (url: string) => ({
+    const exporterOptions = (url: string, headers = config.headers) => ({
       url,
-      headers: config.headers,
+      headers,
       timeoutMillis: config.exportTimeoutMillis,
     })
 
-    this.tracerProvider = new BasicTracerProvider({
-      resource,
-      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter(exporterOptions(config.tracesEndpoint)), {
-        scheduledDelayMillis: 500,
-        exportTimeoutMillis: config.exportTimeoutMillis,
-      })],
-    })
+    const traceProcessors = config.tracesExporter === "none" ? [] : [new BatchSpanProcessor(new OTLPTraceExporter(exporterOptions(config.tracesEndpoint, config.tracesHeaders)), {
+      scheduledDelayMillis: 500,
+      exportTimeoutMillis: config.exportTimeoutMillis,
+    })];
+    this.tracerProvider = new BasicTracerProvider({ resource, spanProcessors: traceProcessors });
     this.tracer = this.tracerProvider.getTracer(SCOPE, instrumentationVersion, { schemaUrl: SCHEMA_URL })
 
     this.meterProvider = new MeterProvider({
       resource,
-      readers: [new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter(exporterOptions(config.metricsEndpoint)),
+      readers: config.metricsExporter === "none" ? [] : [new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter(exporterOptions(config.metricsEndpoint, config.metricsHeaders)),
         exportIntervalMillis: config.exportIntervalMillis,
         exportTimeoutMillis: Math.min(config.exportTimeoutMillis, config.exportIntervalMillis),
       })],
@@ -83,9 +81,9 @@ export class Telemetry {
 
     this.loggerProvider = new LoggerProvider({
       resource,
-      processors: [new BatchLogRecordProcessor({
-        exporter: new OTLPLogExporter(exporterOptions(config.logsEndpoint)),
-        scheduledDelayMillis: 500,
+      processors: config.logsExporter === "none" ? [] : [new BatchLogRecordProcessor({
+        exporter: new OTLPLogExporter(exporterOptions(config.logsEndpoint, config.logsHeaders)),
+        scheduledDelayMillis: config.logsExportIntervalMillis ?? 5000,
         exportTimeoutMillis: config.exportTimeoutMillis,
       })],
     })
@@ -166,8 +164,8 @@ export class Telemetry {
     instrument.record(value, attributes)
   }
 
-  content(value: unknown) {
-    if (!this.config.captureContent) return "[REDACTED]"
+  content(value: unknown, enabled = this.config.captureContent) {
+    if (!enabled) return "[REDACTED]"
     let text: string
     try {
       const serialized = typeof value === "string" ? value : JSON.stringify(value)
@@ -179,12 +177,19 @@ export class Telemetry {
     return `${text.slice(0, Math.max(0, this.config.contentLimit - 24))}[TRUNCATED BY PI-OTEL]`
   }
 
-  async flush() {
-    await Promise.allSettled([
+  async flush(timeoutMillis = this.config.exportTimeoutMillis) {
+    const flush = Promise.allSettled([
       this.tracerProvider.forceFlush(),
       this.meterProvider.forceFlush(),
       this.loggerProvider.forceFlush(),
-    ])
+    ]);
+    await Promise.race([
+      flush,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, timeoutMillis);
+        timer.unref?.();
+      }),
+    ]);
   }
 
   async shutdown() {
