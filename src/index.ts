@@ -101,6 +101,7 @@ export default function piOtel(pi: ExtensionAPI) {
   let chat: Operation | undefined;
   let prompt: string | undefined;
   let systemPrompt: string | undefined;
+  let finalAgentMessage: unknown;
   let inferenceCalls = 0;
   let toolCalls = 0;
   const tools = new Map<string, Operation>();
@@ -168,8 +169,13 @@ export default function piOtel(pi: ExtensionAPI) {
 
   pi.on("agent_start", (_event, ctx) => {
     const telemetry = ensure();
+    // A single user interaction may contain multiple agent runs while Pi
+    // retries or recovers from compaction. Keep one root span until
+    // agent_settled rather than ending it at the first agent_end.
+    if (agent) return;
     inferenceCalls = 0;
     toolCalls = 0;
+    finalAgentMessage = undefined;
     agent = telemetry.start(`invoke_agent pi`, SpanKind.INTERNAL, {
       ...attrs(ctx),
       "gen_ai.operation.name": "invoke_agent",
@@ -461,10 +467,25 @@ export default function piOtel(pi: ExtensionAPI) {
     );
   });
 
-  pi.on("agent_end", (event, ctx) => {
+  pi.on("agent_end", (event, _ctx) => {
     const telemetry = ensure();
-    const finalMessage = lastAssistantMessage(event.messages);
-    const agentOutcome = outcome(finalMessage);
+    finalAgentMessage = lastAssistantMessage(event.messages);
+    if (agent) {
+      const attemptOutcome = outcome(finalAgentMessage);
+      telemetry.event(
+        "pi.agent.end",
+        {
+          ...attrs(_ctx),
+          "gen_ai.response.finish_reasons": [attemptOutcome.reason],
+          "pi.agent.message.count": event.messages.length,
+          "pi.agent.inference_call.count": inferenceCalls,
+          "pi.agent.tool_call.count": toolCalls,
+          "error.type": attemptOutcome.failed ? attemptOutcome.errorType : "",
+        },
+        agent,
+        attemptOutcome.failed ? "ERROR" : "INFO",
+      );
+    }
     if (chat) {
       telemetry.end(
         chat,
@@ -476,55 +497,59 @@ export default function piOtel(pi: ExtensionAPI) {
     for (const operation of tools.values())
       telemetry.end(operation, { "error.type": "agent_ended" });
     tools.clear();
-    if (agent) {
-      const duration = (performance.now() - agent.startedAt) / 1000;
-      const common = attrs(ctx);
-      const metricCommon = metricAttributes(ctx);
-      telemetry.histogram(
-        "gen_ai.invoke_agent.duration",
-        duration,
-        "s",
-        {
-          ...metricCommon,
-          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
-        },
-      );
-      telemetry.histogram(
-        "gen_ai.invoke_agent.inference_calls",
-        inferenceCalls,
-        "{call}",
-        metricCommon,
-      );
-      telemetry.histogram(
-        "gen_ai.invoke_agent.tool_calls",
-        toolCalls,
-        "{call}",
-        metricCommon,
-      );
-      telemetry.event(
-        "pi.agent.end",
-        {
-          ...common,
-          "gen_ai.response.finish_reasons": [agentOutcome.reason],
-          "pi.agent.message.count": event.messages.length,
-          "pi.agent.inference_call.count": inferenceCalls,
-          "pi.agent.tool_call.count": toolCalls,
-          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
-        },
-        agent,
-        agentOutcome.failed ? "ERROR" : "INFO",
-      );
-      telemetry.end(
-        agent,
-        {
-          "gen_ai.response.finish_reasons": [agentOutcome.reason],
-          "gen_ai.output.messages": capture(messageContent(finalMessage)),
-          "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
-        },
-        agentOutcome.failed ? new Error(agentOutcome.errorMessage) : undefined,
-      );
-      agent = undefined;
-    }
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    const telemetry = ensure();
+    if (!agent) return;
+    const agentOutcome = outcome(finalAgentMessage);
+    const duration = (performance.now() - agent.startedAt) / 1000;
+    const common = attrs(ctx);
+    const metricCommon = metricAttributes(ctx);
+    telemetry.histogram(
+      "gen_ai.invoke_agent.duration",
+      duration,
+      "s",
+      {
+        ...metricCommon,
+        "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+      },
+    );
+    telemetry.histogram(
+      "gen_ai.invoke_agent.inference_calls",
+      inferenceCalls,
+      "{call}",
+      metricCommon,
+    );
+    telemetry.histogram(
+      "gen_ai.invoke_agent.tool_calls",
+      toolCalls,
+      "{call}",
+      metricCommon,
+    );
+    telemetry.event(
+      "pi.agent.settled",
+      {
+        ...common,
+        "gen_ai.response.finish_reasons": [agentOutcome.reason],
+        "pi.agent.inference_call.count": inferenceCalls,
+        "pi.agent.tool_call.count": toolCalls,
+        "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+      },
+      agent,
+      agentOutcome.failed ? "ERROR" : "INFO",
+    );
+    telemetry.end(
+      agent,
+      {
+        "gen_ai.response.finish_reasons": [agentOutcome.reason],
+        "gen_ai.output.messages": capture(messageContent(finalAgentMessage)),
+        "error.type": agentOutcome.failed ? agentOutcome.errorType : "",
+      },
+      agentOutcome.failed ? new Error(agentOutcome.errorMessage) : undefined,
+    );
+    agent = undefined;
+    finalAgentMessage = undefined;
   });
 
   pi.on("session_shutdown", async (event, ctx) => {
