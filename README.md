@@ -184,6 +184,50 @@ The span hierarchy, GenAI attributes, metric names, content gate, exporter behav
 
 Exporter failures never alter agent behavior. Providers are initialized on `session_start` and shut down on `session_shutdown`, which flushes pending telemetry once. Exports time out after one second by default so an unavailable collector does not significantly delay Pi shutdown. All extension handlers remain passive.
 
+## Verify with an OTLP Collector
+
+A local OpenTelemetry Collector can receive and print all three signals. Save this minimal configuration as `otel-collector.yaml`:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+Run the collector (for example, with the contrib image, which includes the `debug` exporter):
+
+```bash
+docker run --rm -p 4318:4318 \\
+  -v "$PWD/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \\
+  otel/opentelemetry-collector-contrib:latest
+```
+
+In another terminal, enable export and start Pi:
+
+```bash
+export PI_OTEL_ENABLED=true
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+pi
+```
+
+Send a prompt that causes a tool call and a final response. The collector output should show `invoke_agent pi`, `chat <model>`, and `execute_tool <tool>` spans, plus metrics and structured lifecycle logs. Content remains redacted by default; opt into sensitive capture only when appropriate (see [Sensitive content capture](#sensitive-content-capture)). Stop Pi normally to flush telemetry. Use `OTEL_EXPORTER_OTLP_TIMEOUT` to bound export and shutdown delay if the collector is unavailable.
+
 ## Development
 
 ```bash
