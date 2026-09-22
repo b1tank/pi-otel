@@ -192,6 +192,8 @@ npm run typecheck
 npm test
 ```
 
+`npm test` includes a focused end-to-end test using the installed Pi CLI, a local mock provider, and a local OTLP receiver. It verifies a prompt → provider → tool → final response trace and checks that sensitive content is absent when capture is disabled. It requires no external credentials or collector.
+
 ## License
 
 MIT
